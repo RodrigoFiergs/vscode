@@ -1,193 +1,777 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VS Code Web Bridge</title>
-  <style>
-    :root {
-      --bg: #0f1116;
-      --card: #1b1f2a;
-      --border: #2a3040;
-      --text: #e6e9ef;
-      --muted: #8b94a7;
-      --accent: #4f8cff;
-      --ok: #22c55e;
-      --err: #ef4444;
-    }
-    * { box-sizing: border-box; font-family: system-ui, sans-serif; }
-    body {
-      background: var(--bg); color: var(--text);
-      max-width: 780px; margin: 40px auto; padding: 0 20px;
-    }
-    h1 { font-size: 1.4rem; margin-bottom: 4px; }
-    .sub { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Terminal, Code, ExternalLink, Activity, Wifi, WifiOff, Play, Folder, 
+  FileText, GitBranch, Settings, Plus, RefreshCw, Copy, Check, Info, 
+  Layers, Command, Monitor, Server, AlertCircle, ShieldCheck, HelpCircle,
+  Zap, Box, Sliders, ChevronRight
+} from 'lucide-react';
 
-    .card {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: 12px; padding: 20px; margin-bottom: 18px;
-    }
-    .card h2 { font-size: 1rem; margin: 0 0 12px; }
+export default function App() {
+  // State for WebSocket Connection
+  const [wsStatus, setWsStatus] = useState('DISCONNECTED'); // CONNECTED, CONNECTING, DISCONNECTED
+  const [wsUrl, setWsUrl] = useState('ws://localhost:3000');
+  const [logs, setLogs] = useState([
+    { id: 1, type: 'info', text: 'Dashboard do VS Code inicializado.', time: new Date().toLocaleTimeString() },
+    { id: 2, type: 'warning', text: 'Servidor WebSocket local não detectado em ws://localhost:3000. Modo de simulação/Deep Links ativo.', time: new Date().toLocaleTimeString() }
+  ]);
+  const [simulationMode, setSimulationMode] = useState(true);
 
-    .status {
-      display: flex; align-items: center; gap: 10px;
-      font-weight: 600;
-    }
-    .dot {
-      width: 12px; height: 12px; border-radius: 50%;
-      background: var(--err); box-shadow: 0 0 10px var(--err);
-      transition: all .3s;
-    }
-    .dot.connected {
-      background: var(--ok); box-shadow: 0 0 10px var(--ok);
-    }
+  // Deep Link Form State
+  const [filePath, setFilePath] = useState('/path/to/project/src/index.js');
+  const [lineNum, setLineNum] = useState('10');
+  const [colNum, setColNum] = useState('5');
+  const [repoUrl, setRepoUrl] = useState('https://github.com/microsoft/vscode-extension-samples.git');
+  const [extensionId, setExtensionId] = useState('ms-python.python');
+  const [customCommand, setCustomCommand] = useState('workbench.action.toggleSidebarVisibility');
 
-    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
-    input, textarea {
-      width: 100%; padding: 10px; border-radius: 8px;
-      border: 1px solid var(--border); background: #131722;
-      color: var(--text); font-size: 0.9rem;
-    }
-    textarea { min-height: 120px; resize: vertical; font-family: monospace; }
+  // UI State
+  const [activeTab, setActiveTab] = useState('deeplinks'); // deeplinks, websocket, code-server, docs
+  const [copiedLink, setCopiedLink] = useState('');
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
+  const [codeServerUrl, setCodeServerUrl] = useState('https://vscode.dev');
 
-    button {
-      margin-top: 12px; padding: 10px 18px; border: none; border-radius: 8px;
-      background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
-      transition: opacity .2s;
-    }
-    button:hover { opacity: 0.85; }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
+  // Active Workspace Simulation State
+  const [workspaceState, setWorkspaceState] = useState({
+    folder: 'projeto-sistema-inspecao',
+    activeFile: 'inspecao.py',
+    gitBranch: 'main',
+    unsavedFiles: 0,
+    extensionsActive: 12
+  });
 
-    .log {
-      background: #0b0e14; border: 1px solid var(--border);
-      border-radius: 8px; padding: 12px; max-height: 180px; overflow-y: auto;
-      font-family: monospace; font-size: 0.8rem; color: var(--muted);
-    }
-    .log div { margin-bottom: 4px; }
-    .log .ok { color: var(--ok); }
-    .log .err { color: var(--err); }
-  </style>
-</head>
-<body>
-  <h1>🌐 VS Code Web Bridge</h1>
-  <p class="sub">Conexão direta: <code>ws://localhost:3000</code></p>
+  const wsRef = useRef(null);
+  const terminalEndRef = useRef(null);
 
-  <!-- Status -->
-  <div class="card">
-    <div class="status">
-      <span class="dot" id="dot"></span>
-      <span id="statusText">Desconectado</span>
-    </div>
-  </div>
+  // Auto-scroll terminal logs
+  useEffect(() => {
+    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
 
-  <!-- Criar arquivo -->
-  <div class="card">
-    <h2>📝 Criar / Editar Arquivo</h2>
-    <label for="fileName">Nome do arquivo (relativo ao workspace)</label>
-    <input id="fileName" placeholder="ex: src/hello.txt" value="hello.txt" />
+  // Handle WebSocket Connection
+  const connectWebSocket = () => {
+    setWsStatus('CONNECTING');
+    addLog('info', `Tentando conectar a ${wsUrl}...`);
 
-    <label for="content">Conteúdo</label>
-    <textarea id="content" placeholder="Digite o conteúdo do arquivo...">Olá, VS Code! 👋</textarea>
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    <button id="btnSend">Enviar para o VS Code</button>
-  </div>
+      ws.onopen = () => {
+        setWsStatus('CONNECTED');
+        setSimulationMode(false);
+        addLog('success', `Conectado com sucesso ao VS Code Bridge em ${wsUrl}`);
+        // Request initial state
+        ws.send(JSON.stringify({ type: 'GET_WORKSPACE_STATE' }));
+      };
 
-  <!-- Notificação -->
-  <div class="card">
-    <h2>🔔 Notificação Nativa</h2>
-    <label for="notifMsg">Mensagem</label>
-    <input id="notifMsg" value="Mensagem enviada do site 🌐" />
-    <button id="btnNotify">Mostrar no VS Code</button>
-  </div>
-
-  <!-- Log -->
-  <div class="card">
-    <h2>📡 Log de Eventos</h2>
-    <div class="log" id="log"></div>
-  </div>
-
-<script>
-(() => {
-  const WS_URL = 'ws://localhost:3000';
-  let socket = null;
-  let reconnectTimer = null;
-
-  const $dot = document.getElementById('dot');
-  const $statusText = document.getElementById('statusText');
-  const $log = document.getElementById('log');
-
-  function log(msg, cls = '') {
-    const div = document.createElement('div');
-    div.className = cls;
-    div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    $log.prepend(div);
-  }
-
-  function setStatus(connected) {
-    $dot.classList.toggle('connected', connected);
-    $statusText.textContent = connected ? 'VS Code conectado ✅' : 'Desconectado ❌';
-  }
-
-  function connect() {
-    log(`Conectando em ${WS_URL}...`);
-    socket = new WebSocket(WS_URL);
-
-    socket.addEventListener('open', () => {
-      setStatus(true);
-      log('Conectado ao VS Code.', 'ok');
-    });
-
-    socket.addEventListener('close', () => {
-      setStatus(false);
-      log('Conexão encerrada. Tentando reconectar em 3s...', 'err');
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connect, 3000);
-    });
-
-    socket.addEventListener('error', () => {
-      log('Erro na conexão WebSocket.', 'err');
-    });
-
-    socket.addEventListener('message', (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.action === 'welcome') {
-          log(`Servidor: ${msg.message}`, 'ok');
-        } else if (msg.action === 'response') {
-          log(`✔ ${msg.message}`, 'ok');
-        } else if (msg.action === 'error') {
-          log(`✖ ${msg.message}`, 'err');
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          addLog('received', `Mensagem do VS Code: ${JSON.stringify(data, null, 2)}`);
+          if (data.workspaceState) {
+            setWorkspaceState(data.workspaceState);
+          }
+        } catch (err) {
+          addLog('received', `Dados recebidos: ${event.data}`);
         }
-      } catch {
-        log(`Mensagem não-JSON: ${evt.data}`);
-      }
-    });
-  }
+      };
 
-  function send(action, payload = {}) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      log('Sem conexão com o VS Code.', 'err');
-      return;
+      ws.onerror = () => {
+        addLog('error', `Falha de conexão no WebSocket em ${wsUrl}`);
+      };
+
+      ws.onclose = () => {
+        setWsStatus('DISCONNECTED');
+        addLog('warning', 'Conexão encerrada. Ativando modo de simulação.');
+        setSimulationMode(true);
+      };
+    } catch (err) {
+      setWsStatus('DISCONNECTED');
+      addLog('error', `Erro ao inicializar WebSocket: ${err.message}`);
     }
-    const requestId = crypto.randomUUID();
-    socket.send(JSON.stringify({ action, payload, requestId }));
-    log(`→ ${action}`);
-  }
+  };
 
-  document.getElementById('btnSend').addEventListener('click', () => {
-    const fileName = document.getElementById('fileName').value.trim();
-    const content = document.getElementById('content').value;
-    if (!fileName) return log('Informe o nome do arquivo.', 'err');
-    send('createFile', { fileName, content });
+  const disconnectWebSocket = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+  };
+
+  const addLog = (type, text) => {
+    setLogs((prev) => [
+      ...prev,
+      { id: Date.now(), type, text, time: new Date().toLocaleTimeString() }
+    ]);
+  };
+
+  // Helper to trigger Deep Links
+  const triggerDeepLink = (uri, label) => {
+    addLog('action', `Disparando Deep Link: ${uri}`);
+    window.location.href = uri;
+
+    // Simulate response in simulation mode
+    if (simulationMode) {
+      setTimeout(() => {
+        addLog('info', `Comando [${label}] enviado para o protocolo do sistema (${uri.split('://')[0]}://)`);
+      }, 500);
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    setCopiedLink(text);
+    setTimeout(() => setCopiedLink(''), 2000);
+  };
+
+  // WS Command Sender
+  const sendWsCommand = (command, payload = {}) => {
+    const message = { command, payload, timestamp: Date.now() };
+    
+    if (wsStatus === 'CONNECTED' && wsRef.current) {
+      wsRef.current.send(JSON.stringify(message));
+      addLog('sent', `Comando WebSocket enviado: ${JSON.stringify(message)}`);
+    } else {
+      addLog('warning', `[MODO SIMULAÇÃO] Comando simulado: ${JSON.stringify(message)}`);
+      // Simulate state updates for testing
+      if (command === 'OPEN_FILE') {
+        setWorkspaceState(prev => ({ ...prev, activeFile: payload.file || 'arquivo.js' }));
+      }
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-white">
+      {/* Top Navigation Bar */}
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50 px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-gradient-to-tr from-blue-600 to-cyan-500 rounded-lg shadow-lg shadow-cyan-500/20">
+            <Code className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h1 className="font-bold text-lg leading-tight flex items-center gap-2">
+              VS Code Web Connect
+              <span className="text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded-full font-mono">
+                v1.2.0
+              </span>
+            </h1>
+            <p className="text-xs text-slate-400">Painel de Controle Exclusivamente Web & Ponte de Integração</p>
+          </div>
+        </div>
+
+        {/* Global Connection Badges */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono bg-slate-800/80 border border-slate-700">
+            <span className="text-slate-400">URI Protocol:</span>
+            <span className="text-emerald-400 flex items-center gap-1 font-semibold">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              vscode:// Pronto
+            </span>
+          </div>
+
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono border ${
+            wsStatus === 'CONNECTED' 
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+              : wsStatus === 'CONNECTING'
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+              : 'bg-rose-500/10 border-rose-500/30 text-slate-300'
+          }`}>
+            {wsStatus === 'CONNECTED' ? (
+              <>
+                <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+                <span>WS: Conectado</span>
+              </>
+            ) : wsStatus === 'CONNECTING' ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                <span>WS: Conectando...</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-rose-400" />
+                <span>WS: Desconectado {simulationMode && '(Simulação)'}</span>
+              </>
+            )}
+          </div>
+
+          <button
+            onClick={() => setShowSetupGuide(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg transition border border-slate-700"
+          >
+            <HelpCircle className="w-4 h-4 text-cyan-400" />
+            Guia de Configuração
+          </button>
+        </div>
+      </header>
+
+      {/* Main Layout Body */}
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Sidebar Navigation */}
+        <aside className="w-full md:w-64 border-r border-slate-800 bg-slate-900/40 p-4 flex flex-col gap-2">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-3 mb-1">Menu Principal</p>
+          
+          <button
+            onClick={() => setActiveTab('deeplinks')}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+              activeTab === 'deeplinks'
+                ? 'bg-blue-600/10 border border-blue-500/30 text-blue-400 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+            }`}
+          >
+            <ExternalLink className="w-4 h-4" />
+            <span>Deep Links (URI)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('websocket')}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+              activeTab === 'websocket'
+                ? 'bg-blue-600/10 border border-blue-500/30 text-blue-400 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+            }`}
+          >
+            <Server className="w-4 h-4" />
+            <span>Ponte WebSocket</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('code-server')}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+              activeTab === 'code-server'
+                ? 'bg-blue-600/10 border border-blue-500/30 text-blue-400 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+            }`}
+          >
+            <Monitor className="w-4 h-4" />
+            <span>VS Code Web Embed</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('docs')}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+              activeTab === 'docs'
+                ? 'bg-blue-600/10 border border-blue-500/30 text-blue-400 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+            }`}
+          >
+            <Info className="w-4 h-4" />
+            <span>Documentação API</span>
+          </button>
+
+          <div className="mt-auto pt-4 border-t border-slate-800">
+            <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
+              <p className="text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                Status do Workspace
+              </p>
+              <div className="space-y-1 text-[11px] text-slate-400 font-mono">
+                <div className="flex justify-between">
+                  <span>Pasta:</span>
+                  <span className="text-slate-200 truncate max-w-[100px]">{workspaceState.folder}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Arquivo:</span>
+                  <span className="text-cyan-400 truncate max-w-[100px]">{workspaceState.activeFile}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Git:</span>
+                  <span className="text-purple-400">{workspaceState.gitBranch}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Main Workspace View */}
+        <main className="flex-1 p-4 md:p-6 overflow-y-auto space-y-6">
+          
+          {/* TAB 1: DEEP LINKS */}
+          {activeTab === 'deeplinks' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                  <ExternalLink className="w-5 h-5 text-cyan-400" />
+                  Disparador de Deep Links Nativo (`vscode://`)
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Abra arquivos, pastas, instale extensões ou execute repositórios diretamente na sua instância local do VS Code através do navegador.
+                </p>
+              </div>
+
+              {/* Quick Presets Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <button
+                  onClick={() => triggerDeepLink('vscode://', 'Abrir VS Code')}
+                  className="p-3 bg-slate-900 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl text-left transition group shadow-sm"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <Code className="w-5 h-5 text-blue-400 group-hover:scale-110 transition" />
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300" />
+                  </div>
+                  <div className="font-semibold text-sm text-slate-200">Abrir VS Code</div>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">vscode://</div>
+                </button>
+
+                <button
+                  onClick={() => triggerDeepLink('vscode://settings', 'Abrir Configurações')}
+                  className="p-3 bg-slate-900 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl text-left transition group shadow-sm"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <Settings className="w-5 h-5 text-amber-400 group-hover:scale-110 transition" />
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300" />
+                  </div>
+                  <div className="font-semibold text-sm text-slate-200">Configurações</div>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">vscode://settings</div>
+                </button>
+
+                <button
+                  onClick={() => triggerDeepLink('vscode://file/inspecao.py:12:1', 'Inspeção de Qualidade')}
+                  className="p-3 bg-slate-900 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl text-left transition group shadow-sm"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <FileText className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition" />
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300" />
+                  </div>
+                  <div className="font-semibold text-sm text-slate-200">Script inspecao.py</div>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">Linha 12</div>
+                </button>
+
+                <button
+                  onClick={() => triggerDeepLink('vscode://vscode.extension/ms-python.python', 'Extensão Python')}
+                  className="p-3 bg-slate-900 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl text-left transition group shadow-sm"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <Box className="w-5 h-5 text-purple-400 group-hover:scale-110 transition" />
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-300" />
+                  </div>
+                  <div className="font-semibold text-sm text-slate-200">Extensão Python</div>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">Marketplace</div>
+                </button>
+              </div>
+
+              {/* Custom Deep Link Builders */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* File / Position Builder */}
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-cyan-400" />
+                    Abrir Arquivo em Posição Específica
+                  </h3>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Caminho Absoluto do Arquivo</label>
+                      <input 
+                        type="text"
+                        value={filePath}
+                        onChange={(e) => setFilePath(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                        placeholder="/Users/seu-usuario/projeto/index.js"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">Linha</label>
+                        <input 
+                          type="number"
+                          value={lineNum}
+                          onChange={(e) => setLineNum(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">Coluna</label>
+                        <input 
+                          type="number"
+                          value={colNum}
+                          onChange={(e) => setColNum(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Target URI Generated */}
+                    {(() => {
+                      const uri = `vscode://file${filePath.startsWith('/') ? '' : '/'}${filePath}:${lineNum}:${colNum}`;
+                      return (
+                        <div className="pt-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                            <span>URI Gerado:</span>
+                            <button 
+                              onClick={() => copyToClipboard(uri)} 
+                              className="text-cyan-400 hover:underline flex items-center gap-1"
+                            >
+                              {copiedLink === uri ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                              {copiedLink === uri ? 'Copiado!' : 'Copiar'}
+                            </button>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-xs font-mono text-cyan-300 break-all select-all">
+                            {uri}
+                          </div>
+                          <button
+                            onClick={() => triggerDeepLink(uri, 'Abrir Arquivo')}
+                            className="mt-3 w-full bg-cyan-600 hover:bg-cyan-500 text-white font-medium py-2 rounded-lg text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-cyan-600/20"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                            Executar no VS Code
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Clone Git Repo Builder */}
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                    <GitBranch className="w-4 h-4 text-purple-400" />
+                    Clonar Repositório Git Direct no Editor
+                  </h3>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">URL do Repositório Git</label>
+                      <input 
+                        type="text"
+                        value={repoUrl}
+                        onChange={(e) => setRepoUrl(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    {(() => {
+                      const uri = `vscode://vscode.git/clone?url=${encodeURIComponent(repoUrl)}`;
+                      return (
+                        <div className="pt-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                            <span>URI Gerado:</span>
+                            <button 
+                              onClick={() => copyToClipboard(uri)} 
+                              className="text-purple-400 hover:underline flex items-center gap-1"
+                            >
+                              {copiedLink === uri ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                              {copiedLink === uri ? 'Copiado!' : 'Copiar'}
+                            </button>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-xs font-mono text-purple-300 break-all select-all">
+                            {uri}
+                          </div>
+                          <button
+                            onClick={() => triggerDeepLink(uri, 'Clonar Repositório')}
+                            className="mt-3 w-full bg-purple-600 hover:bg-purple-500 text-white font-medium py-2 rounded-lg text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-purple-600/20"
+                          >
+                            <GitBranch className="w-3.5 h-3.5" />
+                            Clonar via VS Code
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: WEBSOCKET BRIDGE */}
+          {activeTab === 'websocket' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                  <Server className="w-5 h-5 text-cyan-400" />
+                  Ponte de Comunicação WebSocket Bidirecional
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Envie payloads estruturados em tempo real para um servidor ponte em execução no seu ambiente local ou remoto.
+                </p>
+              </div>
+
+              {/* Connection Control Box */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row gap-3 items-end">
+                  <div className="flex-1 w-full">
+                    <label className="text-xs text-slate-400 block mb-1">Endereço do Servidor WebSocket (Localhost / Remote)</label>
+                    <input 
+                      type="text"
+                      value={wsUrl}
+                      onChange={(e) => setWsUrl(e.target.value)}
+                      disabled={wsStatus === 'CONNECTED'}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                    />
+                  </div>
+                  
+                  {wsStatus === 'CONNECTED' ? (
+                    <button
+                      onClick={disconnectWebSocket}
+                      className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs rounded-lg transition"
+                    >
+                      Desconectar
+                    </button>
+                  ) : (
+                    <button
+                      onClick={connectWebSocket}
+                      disabled={wsStatus === 'CONNECTING'}
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs rounded-lg transition flex items-center gap-2 shadow-lg shadow-cyan-600/20 disabled:opacity-50"
+                    >
+                      {wsStatus === 'CONNECTING' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wifi className="w-3.5 h-3.5" />}
+                      Conectar WebSocket
+                    </button>
+                  )}
+                </div>
+
+                {simulationMode && (
+                  <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-xs">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>
+                      Modo Simulação Ativo: Nenhuma conexão real WebSocket foi detectada. Os comandos enviados serão logados localmente e atualizarão o estado simulado do dashboard.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                    Abrir Arquivo Ativo
+                  </h4>
+                  <button
+                    onClick={() => sendWsCommand('OPEN_FILE', { file: 'inspecao.py', line: 15 })}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium py-2 rounded-lg transition border border-slate-700"
+                  >
+                    Abrir inspecao.py (L15)
+                  </button>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                    Executar no Terminal
+                  </h4>
+                  <button
+                    onClick={() => sendWsCommand('EXECUTE_TERMINAL', { command: 'python inspecao.py' })}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium py-2 rounded-lg transition border border-slate-700"
+                  >
+                    Rodar `python inspecao.py`
+                  </button>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Command className="w-3.5 h-3.5 text-purple-400" />
+                    Ativar Modo Debug
+                  </h4>
+                  <button
+                    onClick={() => sendWsCommand('START_DEBUG', { configName: 'Python: Current File' })}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium py-2 rounded-lg transition border border-slate-700"
+                  >
+                    Iniciar Sessão Debug
+                  </button>
+                </div>
+              </div>
+
+              {/* Console & Log Terminal */}
+              <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+                <div className="bg-slate-900 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+                    <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                    Console Telemetria do Event-Loop WebSocket
+                  </div>
+                  <button
+                    onClick={() => setLogs([])}
+                    className="text-[11px] text-slate-500 hover:text-slate-300 font-mono"
+                  >
+                    Limpar Logs
+                  </button>
+                </div>
+
+                <div className="p-4 font-mono text-xs max-h-64 overflow-y-auto space-y-1.5">
+                  {logs.length === 0 ? (
+                    <p className="text-slate-600 italic">Nenhum evento registrado ainda.</p>
+                  ) : (
+                    logs.map((log) => (
+                      <div key={log.id} className="flex items-start gap-2 leading-relaxed">
+                        <span className="text-slate-600 text-[10px] select-none">{log.time}</span>
+                        <span className={`px-1.5 py-0.2 text-[10px] rounded uppercase font-bold shrink-0 ${
+                          log.type === 'error' ? 'bg-rose-500/20 text-rose-400' :
+                          log.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' :
+                          log.type === 'warning' ? 'bg-amber-500/20 text-amber-400' :
+                          log.type === 'sent' ? 'bg-purple-500/20 text-purple-400' :
+                          log.type === 'received' ? 'bg-cyan-500/20 text-cyan-400' :
+                          'bg-slate-800 text-slate-400'
+                        }`}>
+                          {log.type}
+                        </span>
+                        <span className="text-slate-300 break-all">{log.text}</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={terminalEndRef} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: CODE SERVER EMBED */}
+          {activeTab === 'code-server' && (
+            <div className="space-y-4 h-full flex flex-col">
+              <div>
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                  <Monitor className="w-5 h-5 text-cyan-400" />
+                  Instância do VS Code Web (code-server / vscode.dev)
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Visualize ou incorpore instâncias web do VS Code via iframe seguro diretamente dentro deste dashboard.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <input 
+                  type="text"
+                  value={codeServerUrl}
+                  onChange={(e) => setCodeServerUrl(e.target.value)}
+                  className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                  placeholder="https://vscode.dev ou URL do seu code-server remoto"
+                />
+                <button
+                  onClick={() => setCodeServerUrl(codeServerUrl)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition"
+                >
+                  Carregar Instância
+                </button>
+              </div>
+
+              <div className="flex-1 border border-slate-800 rounded-xl overflow-hidden bg-slate-900 min-h-[500px]">
+                <iframe 
+                  src={codeServerUrl}
+                  title="VS Code Web Instance"
+                  className="w-full h-full border-0"
+                  allow="clipboard-read; clipboard-write"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: API DOCUMENTATION */}
+          {activeTab === 'docs' && (
+            <div className="space-y-6 max-w-4xl">
+              <div>
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                  <Info className="w-5 h-5 text-cyan-400" />
+                  Documentação Técnica da Integração Web
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Como este site se comunica com o VS Code local sem precisar de extensões nativas instaladas.
+                </p>
+              </div>
+
+              {/* Method 1: Protocol Handling */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-3">
+                <h3 className="text-base font-semibold text-cyan-400 flex items-center gap-2">
+                  1. Esquema de URI Nativo (`vscode://`)
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  O VS Code registra automaticamente um handler de protocolo no sistema operacional (Windows, macOS, Linux). Qualquer site web pode disparar requisições redirecionando a navegação ou chamando links desse protocolo.
+                </p>
+
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs font-mono text-slate-300 space-y-2">
+                  <div className="text-slate-500">// Exemplos de Sintaxe de URI:</div>
+                  <div><span className="text-purple-400">Abrir Arquivo:</span> vscode://file/caminho/completo/do/arquivo.py:linha:coluna</div>
+                  <div><span className="text-purple-400">Abrir Pasta:</span> vscode://file/caminho/completo/da/pasta/</div>
+                  <div><span className="text-purple-400">Clonar Git:</span> vscode://vscode.git/clone?url=HTTPS_GIT_URL</div>
+                  <div><span className="text-purple-400">Instalar Extensão:</span> vscode://vscode.extension/NOME_PUBLISHER.NOME_EXTENSAO</div>
+                </div>
+              </div>
+
+              {/* Method 2: Local WebSocket Bridge */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-3">
+                <h3 className="text-base font-semibold text-cyan-400 flex items-center gap-2">
+                  2. Servidor Ponte WebSocket (Node.js)
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Para controle avançado e bidirecional em tempo real (ler arquivos, receber logs, executar compilações no terminal), um servidor Node.js intermediário roda na máquina do desenvolvedor e expõe um Socket em `localhost:3000`.
+                </p>
+
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto">
+                  <pre className="text-cyan-300">{`// Exemplo de servidor Node.js simplificado (server.js):
+const { WebSocketServer } = require('ws');
+const { exec } = require('child_process');
+
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on('connection', (ws) => {
+  console.log('Site conectado ao VS Code Bridge');
+
+  ws.on('message', (message) => {
+    const data = JSON.parse(message);
+    if (data.command === 'OPEN_FILE') {
+      exec(\`code -g \${data.payload.file}:\${data.payload.line}\`);
+    }
   });
+});`}</pre>
+                </div>
+              </div>
+            </div>
+          )}
 
-  document.getElementById('btnNotify').addEventListener('click', () => {
-    const message = document.getElementById('notifMsg').value.trim();
-    send('notify', { message });
-  });
+        </main>
+      </div>
 
-  connect();
-})();
-</script>
-</body>
-</html>
+      {/* SETUP GUIDE MODAL */}
+      {showSetupGuide && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-5 shadow-2xl relative">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-bold text-lg text-slate-100 flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-cyan-400" />
+                Guia de Integração e Pré-requisitos
+              </h3>
+              <button 
+                onClick={() => setShowSetupGuide(false)}
+                className="text-slate-400 hover:text-white text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs text-slate-300">
+              <div className="flex gap-3">
+                <div className="w-6 h-6 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center justify-center font-bold shrink-0">1</div>
+                <div>
+                  <h4 className="font-semibold text-slate-100 text-sm">Integração por Deep Links (Pronto para Usar)</h4>
+                  <p className="mt-0.5 text-slate-400">
+                    O método de Deep Link (`vscode://`) não exige nenhuma instalação adicional se você já possui o Visual Studio Code instalado no computador. O navegador solicitará permissão para abrir o aplicativo na primeira utilização.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <div className="w-6 h-6 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 flex items-center justify-center font-bold shrink-0">2</div>
+                <div>
+                  <h4 className="font-semibold text-slate-100 text-sm">Integração Bidirecional por WebSocket (Opcional)</h4>
+                  <p className="mt-0.5 text-slate-400">
+                    Para habilitar atualizações em tempo real no dashboard, basta iniciar um servidor bridge simples no seu terminal usando o Node.js:
+                  </p>
+                  <div className="mt-2 bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-[11px] text-purple-300">
+                    npx ws-code-bridge --port 3000
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowSetupGuide(false)}
+                className="bg-cyan-600 hover:bg-cyan-500 text-white font-medium px-4 py-2 rounded-lg text-xs transition"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
