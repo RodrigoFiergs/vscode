@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VS Code Web Bridge</title>
+  <style>
+    :root {
+      --bg: #0f1116;
+      --card: #1b1f2a;
+      --border: #2a3040;
+      --text: #e6e9ef;
+      --muted: #8b94a7;
+      --accent: #4f8cff;
+      --ok: #22c55e;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+    body {
+      background: var(--bg); color: var(--text);
+      max-width: 780px; margin: 40px auto; padding: 0 20px;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    .sub { color: var(--muted); margin-bottom: 24px; font-size: 0.9rem; }
+
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px; margin-bottom: 18px;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 12px; }
+
+    .status {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 600;
+    }
+    .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--err); box-shadow: 0 0 10px var(--err);
+      transition: all .3s;
+    }
+    .dot.connected {
+      background: var(--ok); box-shadow: 0 0 10px var(--ok);
+    }
+
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+    input, textarea {
+      width: 100%; padding: 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: #131722;
+      color: var(--text); font-size: 0.9rem;
+    }
+    textarea { min-height: 120px; resize: vertical; font-family: monospace; }
+
+    button {
+      margin-top: 12px; padding: 10px 18px; border: none; border-radius: 8px;
+      background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+      transition: opacity .2s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .log {
+      background: #0b0e14; border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; max-height: 180px; overflow-y: auto;
+      font-family: monospace; font-size: 0.8rem; color: var(--muted);
+    }
+    .log div { margin-bottom: 4px; }
+    .log .ok { color: var(--ok); }
+    .log .err { color: var(--err); }
+  </style>
+</head>
+<body>
+  <h1>🌐 VS Code Web Bridge</h1>
+  <p class="sub">Conexão direta: <code>ws://localhost:3000</code></p>
+
+  <!-- Status -->
+  <div class="card">
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">Desconectado</span>
+    </div>
+  </div>
+
+  <!-- Criar arquivo -->
+  <div class="card">
+    <h2>📝 Criar / Editar Arquivo</h2>
+    <label for="fileName">Nome do arquivo (relativo ao workspace)</label>
+    <input id="fileName" placeholder="ex: src/hello.txt" value="hello.txt" />
+
+    <label for="content">Conteúdo</label>
+    <textarea id="content" placeholder="Digite o conteúdo do arquivo...">Olá, VS Code! 👋</textarea>
+
+    <button id="btnSend">Enviar para o VS Code</button>
+  </div>
+
+  <!-- Notificação -->
+  <div class="card">
+    <h2>🔔 Notificação Nativa</h2>
+    <label for="notifMsg">Mensagem</label>
+    <input id="notifMsg" value="Mensagem enviada do site 🌐" />
+    <button id="btnNotify">Mostrar no VS Code</button>
+  </div>
+
+  <!-- Log -->
+  <div class="card">
+    <h2>📡 Log de Eventos</h2>
+    <div class="log" id="log"></div>
+  </div>
+
+<script>
+(() => {
+  const WS_URL = 'ws://localhost:3000';
+  let socket = null;
+  let reconnectTimer = null;
+
+  const $dot = document.getElementById('dot');
+  const $statusText = document.getElementById('statusText');
+  const $log = document.getElementById('log');
+
+  function log(msg, cls = '') {
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    $log.prepend(div);
+  }
+
+  function setStatus(connected) {
+    $dot.classList.toggle('connected', connected);
+    $statusText.textContent = connected ? 'VS Code conectado ✅' : 'Desconectado ❌';
+  }
+
+  function connect() {
+    log(`Conectando em ${WS_URL}...`);
+    socket = new WebSocket(WS_URL);
+
+    socket.addEventListener('open', () => {
+      setStatus(true);
+      log('Conectado ao VS Code.', 'ok');
+    });
+
+    socket.addEventListener('close', () => {
+      setStatus(false);
+      log('Conexão encerrada. Tentando reconectar em 3s...', 'err');
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 3000);
+    });
+
+    socket.addEventListener('error', () => {
+      log('Erro na conexão WebSocket.', 'err');
+    });
+
+    socket.addEventListener('message', (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.action === 'welcome') {
+          log(`Servidor: ${msg.message}`, 'ok');
+        } else if (msg.action === 'response') {
+          log(`✔ ${msg.message}`, 'ok');
+        } else if (msg.action === 'error') {
+          log(`✖ ${msg.message}`, 'err');
+        }
+      } catch {
+        log(`Mensagem não-JSON: ${evt.data}`);
+      }
+    });
+  }
+
+  function send(action, payload = {}) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      log('Sem conexão com o VS Code.', 'err');
+      return;
+    }
+    const requestId = crypto.randomUUID();
+    socket.send(JSON.stringify({ action, payload, requestId }));
+    log(`→ ${action}`);
+  }
+
+  document.getElementById('btnSend').addEventListener('click', () => {
+    const fileName = document.getElementById('fileName').value.trim();
+    const content = document.getElementById('content').value;
+    if (!fileName) return log('Informe o nome do arquivo.', 'err');
+    send('createFile', { fileName, content });
+  });
+
+  document.getElementById('btnNotify').addEventListener('click', () => {
+    const message = document.getElementById('notifMsg').value.trim();
+    send('notify', { message });
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>
